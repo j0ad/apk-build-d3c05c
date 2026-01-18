@@ -1,0 +1,79 @@
+
+name: Build Android APK
+on:
+  push:
+    branches: [ main, master ]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # نستخدم Java 17 لأنها الأكثر استقراراً مع Kotlin 1.8 وتتوافق مع Capacitor
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install Tools
+        run: |
+          npm install --force
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+
+      - name: Build Web Project
+        run: |
+          npm run build --if-present
+          if [ -d "dist" ]; then
+            echo "WEB_DIR=dist" >> $GITHUB_ENV
+          else
+            echo "WEB_DIR=build" >> $GITHUB_ENV
+          fi
+
+      - name: Initialize Capacitor and Android
+        run: |
+          npx cap init "MyConvertedApp" "com.mycompany.app" --web-dir ${{ env.WEB_DIR }}
+          npx cap add android || true
+
+      # --- بداية الحل السحري ---
+      - name: Force Kotlin Version (Fix Duplicate Class)
+        run: |
+          # نقوم بإضافة كود يجبر Gradle على استخدام نسخة موحدة من Kotlin
+          # هذا يحل مشكلة التضارب بين 1.6.21 و 1.8.22
+          echo "
+          subprojects {
+              project.configurations.all {
+                  resolutionStrategy {
+                      force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+                      force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+                      force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+                  }
+              }
+          }
+          " >> android/build.gradle
+          echo "✅ تم تطبيق إصلاح توحيد إصدارات Kotlin"
+      # --- نهاية الحل السحري ---
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build APK (Gradle)
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Final-Mobile-App-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
